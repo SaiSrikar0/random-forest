@@ -1,19 +1,101 @@
 """Streamlit app to predict Titanic ticket using a saved random forest pipeline."""
-import os
+from pathlib import Path
 
 import joblib
 import pandas as pd
 import streamlit as st
+from sklearn.compose import ColumnTransformer
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import LabelEncoder, OneHotEncoder, StandardScaler
 
 
-MODEL_PATH = "rf_ticket_model.pkl"
+BASE_DIR = Path(__file__).resolve().parent
+MODEL_PATH = BASE_DIR / "rf_ticket_model.pkl"
+LEGACY_MODEL_PATH = BASE_DIR / "ticket_model_small.pkl"
+DATA_PATH = BASE_DIR / "Titanic-Dataset.csv"
+
+
+def _read_dataset():
+    if not DATA_PATH.exists():
+        return None
+
+    df = pd.read_csv(DATA_PATH)
+    required_columns = {"Survived", "Sex", "Age", "Pclass", "Fare"}
+    if not required_columns.issubset(df.columns):
+        return None
+
+    df = df[["Survived", "Sex", "Age", "Pclass", "Fare"]].copy()
+    df["Age"] = pd.to_numeric(df["Age"], errors="coerce")
+    df["Fare"] = pd.to_numeric(df["Fare"], errors="coerce")
+    df["Pclass"] = pd.to_numeric(df["Pclass"], errors="coerce")
+    df["Age"] = df["Age"].fillna(df["Age"].median())
+    df["Fare"] = df["Fare"].fillna(df["Fare"].median())
+    df["Pclass"] = df["Pclass"].fillna(df["Pclass"].mode().iloc[0])
+    df["Sex"] = df["Sex"].astype(str).str.lower().str.strip()
+    return df.dropna(subset=["Survived", "Sex", "Age", "Pclass", "Fare"])
+
+
+def _build_pipeline():
+    numeric_features = ["Age", "Pclass", "Fare"]
+    categorical_features = ["Sex"]
+
+    numeric_pipeline = Pipeline(
+        steps=[
+            ("imputer", SimpleImputer(strategy="median")),
+            ("scaler", StandardScaler()),
+        ]
+    )
+    categorical_pipeline = Pipeline(
+        steps=[
+            ("imputer", SimpleImputer(strategy="most_frequent")),
+            ("encoder", OneHotEncoder(handle_unknown="ignore")),
+        ]
+    )
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("num", numeric_pipeline, numeric_features),
+            ("cat", categorical_pipeline, categorical_features),
+        ]
+    )
+
+    return Pipeline(
+        steps=[
+            ("preprocessor", preprocessor),
+            (
+                "model",
+                RandomForestClassifier(
+                    n_estimators=200,
+                    random_state=42,
+                    n_jobs=-1,
+                ),
+            ),
+        ]
+    )
 
 
 @st.cache_resource
 def load_artifacts():
-    if not os.path.exists(MODEL_PATH):
+    for path in (MODEL_PATH, LEGACY_MODEL_PATH):
+        if path.exists():
+            return joblib.load(path)
+
+    df = _read_dataset()
+    if df is None or df.empty:
         return None
-    return joblib.load(MODEL_PATH)
+
+    label_encoder = LabelEncoder()
+    y = label_encoder.fit_transform(df["Survived"].astype(int))
+    X = df[["Sex", "Age", "Pclass", "Fare"]]
+
+    model = _build_pipeline()
+    model.fit(X, y)
+
+    artifacts = {"model": model, "label_encoder": label_encoder}
+    joblib.dump(artifacts, MODEL_PATH)
+    return artifacts
 
 
 def build_input_df(sex, age, pclass, fare):
@@ -33,7 +115,7 @@ st.write("Predict ticket based on Sex, Age, Pclass, and Fare.")
 
 artifacts = load_artifacts()
 if artifacts is None:
-    st.error("Model file not found. Run rf_ticket_classification.ipynb to train and save rf_ticket_model.pkl.")
+    st.error("Could not load or train a Titanic model from Titanic-Dataset.csv.")
     st.stop()
 
 model = artifacts["model"]
@@ -50,5 +132,6 @@ with col2:
 if st.button("Predict"):
     input_df = build_input_df(sex, age, pclass, fare)
     pred_label = model.predict(input_df)[0]
-    ticket = label_encoder.inverse_transform([pred_label])[0]
-    st.success(f"Predicted Ticket: {ticket}")
+    survival_flag = label_encoder.inverse_transform([pred_label])[0]
+    survival_text = "Survived" if int(survival_flag) == 1 else "Did not survive"
+    st.success(f"Predicted Outcome: {survival_text}")

@@ -1,28 +1,97 @@
 """Streamlit app to predict laptop price using a saved random forest pipeline."""
-import os
+from pathlib import Path
 
 import joblib
 import pandas as pd
 import streamlit as st
+from sklearn.compose import ColumnTransformer
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 
-MODEL_PATH = "rf_laptop_price_model.pkl"
-DATA_PATH = "data.csv"
+BASE_DIR = Path(__file__).resolve().parent
+MODEL_PATH = BASE_DIR / "rf_laptop_price_model.pkl"
+DATA_PATH = BASE_DIR / "data.csv"
+
+
+def _read_dataset():
+    if not DATA_PATH.exists():
+        return None
+
+    df = pd.read_csv(DATA_PATH)
+    required_columns = {"brand", "CPU", "Ram", "ROM", "price"}
+    if not required_columns.issubset(df.columns):
+        return None
+
+    df = df[["brand", "CPU", "Ram", "ROM", "price"]].copy()
+    df["Ram_GB"] = df["Ram"].astype(str).str.extract(r"(\d+)").astype(float)
+    df["ROM_GB"] = df["ROM"].astype(str).str.extract(r"(\d+)").astype(float)
+    return df.drop(columns=["Ram", "ROM"])
+
+
+def _build_pipeline():
+    numeric_features = ["Ram_GB", "ROM_GB"]
+    categorical_features = ["brand", "CPU"]
+
+    numeric_pipeline = Pipeline(
+        steps=[
+            ("imputer", SimpleImputer(strategy="median")),
+            ("scaler", StandardScaler()),
+        ]
+    )
+    categorical_pipeline = Pipeline(
+        steps=[
+            ("imputer", SimpleImputer(strategy="most_frequent")),
+            ("encoder", OneHotEncoder(handle_unknown="ignore")),
+        ]
+    )
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("num", numeric_pipeline, numeric_features),
+            ("cat", categorical_pipeline, categorical_features),
+        ]
+    )
+
+    return Pipeline(
+        steps=[
+            ("preprocessor", preprocessor),
+            (
+                "model",
+                RandomForestRegressor(
+                    n_estimators=200,
+                    random_state=42,
+                    n_jobs=-1,
+                ),
+            ),
+        ]
+    )
 
 
 @st.cache_resource
 def load_model():
-    if not os.path.exists(MODEL_PATH):
+    if MODEL_PATH.exists():
+        return joblib.load(MODEL_PATH)
+
+    df = _read_dataset()
+    if df is None or df.empty:
         return None
-    return joblib.load(MODEL_PATH)
+
+    model = _build_pipeline()
+    model.fit(df[["brand", "CPU", "Ram_GB", "ROM_GB"]], df["price"])
+    joblib.dump(model, MODEL_PATH)
+    return model
 
 
 def load_options():
-    if not os.path.exists(DATA_PATH):
+    df = _read_dataset()
+    if df is None or df.empty:
         return ["HP", "Dell", "Lenovo"], ["Intel Core i5", "AMD Ryzen 5"]
-    df = pd.read_csv(DATA_PATH)
-    brands = sorted(df["brand"].dropna().unique().tolist())
-    cpus = sorted(df["CPU"].dropna().unique().tolist())
+
+    brands = sorted(df["brand"].dropna().astype(str).unique().tolist())
+    cpus = sorted(df["CPU"].dropna().astype(str).unique().tolist())
     return brands, cpus
 
 
@@ -43,9 +112,7 @@ st.write("Predict laptop price using brand, CPU, RAM, and ROM.")
 
 model = load_model()
 if model is None:
-    st.error(
-        "Model file not found. Run rf_laptop_regression.ipynb to train and save rf_laptop_price_model.pkl."
-    )
+    st.error("Could not load or train a laptop pricing model from data.csv.")
     st.stop()
 
 brands, cpus = load_options()
