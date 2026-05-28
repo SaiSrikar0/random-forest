@@ -80,7 +80,15 @@ def _build_pipeline():
 def load_artifacts():
     for path in (MODEL_PATH, LEGACY_MODEL_PATH):
         if path.exists():
-            return joblib.load(path)
+            try:
+                return joblib.load(path)
+            except Exception as e:
+                bad_path = path.with_suffix(path.suffix + ".broken")
+                try:
+                    path.rename(bad_path)
+                except Exception:
+                    pass
+                print(f"Failed to load existing artifacts at {path}; moved to {bad_path}. Error: {e}")
 
     df = _read_dataset()
     if df is None or df.empty:
@@ -94,7 +102,10 @@ def load_artifacts():
     model.fit(X, y)
 
     artifacts = {"model": model, "label_encoder": label_encoder}
-    joblib.dump(artifacts, MODEL_PATH)
+    try:
+        joblib.dump(artifacts, MODEL_PATH)
+    except Exception as e:
+        print(f"Failed to save artifacts to {MODEL_PATH}: {e}")
     return artifacts
 
 

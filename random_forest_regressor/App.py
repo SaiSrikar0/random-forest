@@ -73,7 +73,16 @@ def _build_pipeline():
 @st.cache_resource
 def load_model():
     if MODEL_PATH.exists():
-        return joblib.load(MODEL_PATH)
+        try:
+            return joblib.load(MODEL_PATH)
+        except Exception as e:
+            # Rename broken model so we don't keep failing to unpickle it
+            bad_path = MODEL_PATH.with_suffix(MODEL_PATH.suffix + ".broken")
+            try:
+                MODEL_PATH.rename(bad_path)
+            except Exception:
+                pass
+            print(f"Failed to load existing model; moved to {bad_path}. Error: {e}")
 
     df = _read_dataset()
     if df is None or df.empty:
@@ -81,7 +90,10 @@ def load_model():
 
     model = _build_pipeline()
     model.fit(df[["brand", "CPU", "Ram_GB", "ROM_GB"]], df["price"])
-    joblib.dump(model, MODEL_PATH)
+    try:
+        joblib.dump(model, MODEL_PATH)
+    except Exception as e:
+        print(f"Failed to save trained model to {MODEL_PATH}: {e}")
     return model
 
 
